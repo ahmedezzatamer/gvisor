@@ -341,7 +341,7 @@ TEST_P(NetlinkSetLinkTest, ChangeLinkName) {
   SKIP_IF(IsRunningWithHostinet());
   // Hosts that run with old kernel allow renaming only when
   // the interface is down. The restriction has been removed.
-  SKIP_IF(!IsRunningOnGvisor());
+  SKIP_IF(GvisorPlatform() == Platform::kNative);
   Link loopback_link = ASSERT_NO_ERRNO_AND_VALUE(LoopbackLink());
 
   FileDescriptor fd =
@@ -459,7 +459,7 @@ TEST_P(NetlinkSetLinkTest, ChangeMTU) {
 
 TEST_P(NetlinkSetLinkTest, ChangeMACAddress) {
   SKIP_IF(!ASSERT_NO_ERRNO_AND_VALUE(HaveCapability(CAP_NET_ADMIN)));
-  SKIP_IF(!IsRunningOnGvisor());
+  SKIP_IF(GvisorPlatform() == Platform::kNative);
   SKIP_IF(IsRunningWithHostinet());
   Link loopback_link = ASSERT_NO_ERRNO_AND_VALUE(LoopbackLink());
 
@@ -1642,7 +1642,7 @@ TEST_P(NetlinkRouteIpInvariantTest, DeleteRoute) {
 
 TEST_P(NetlinkRouteIpInvariantTest, AddAndRemoveRoute) {
   // Gvisor does not support `RTM_NEWROUTE` or `RTM_DELROUTE`.
-  SKIP_IF(IsRunningOnGvisor() && GvisorPlatform() != Platform::kStarnix);
+  SKIP_IF(IsRunningOnGvisor());
   // CAP_NET_ADMIN is required to modify the routing table.
   SKIP_IF(!ASSERT_NO_ERRNO_AND_VALUE(HaveCapability(CAP_NET_ADMIN)));
 
@@ -1694,7 +1694,7 @@ TEST_P(NetlinkRouteIpInvariantTest, AddAndRemoveRoute) {
 // GetRuleDump tests a RTM_GETRULE + NLM_F_DUMP request.
 TEST(NetlinkRouteTest, GetRuleDump) {
   // Gvisor does not support `RTM_GETRULE`
-  SKIP_IF(IsRunningOnGvisor() && GvisorPlatform() != Platform::kStarnix);
+  SKIP_IF(IsRunningOnGvisor());
 
   FileDescriptor fd =
       ASSERT_NO_ERRNO_AND_VALUE(NetlinkBoundSocket(NETLINK_ROUTE));
@@ -1749,7 +1749,7 @@ TEST(NetlinkRouteTest, GetRuleDump) {
 
 TEST_P(NetlinkRouteIpInvariantTest, AddAndRemoveRule) {
   // Gvisor does not support `RTM_NEWRULE` or `RTM_DELRULE`.
-  SKIP_IF(IsRunningOnGvisor() && GvisorPlatform() != Platform::kStarnix);
+  SKIP_IF(IsRunningOnGvisor());
   // CAP_NET_ADMIN is required to modify the rule table.
   SKIP_IF(!ASSERT_NO_ERRNO_AND_VALUE(HaveCapability(CAP_NET_ADMIN)));
 
