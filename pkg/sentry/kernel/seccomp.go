@@ -103,9 +103,16 @@ func (t *Task) checkSeccompSyscall(sysno int32, args arch.SyscallArguments, ip h
 		// portion of the return value will be passed as si_errno." -
 		// Documentation/prctl/seccomp_filter.txt
 		t.SendSignal(seccompSiginfo(t, int32(result.Data()), sysno, ip))
-		// "The return value register will contain an arch-dependent value." In
-		// practice, it's ~always the syscall number.
-		t.Arch().SetReturn(uintptr(sysno))
+		// Roll back the return value register (which doSyscall clobbered with
+		// -ENOSYS) to its pre-syscall value; see Linux's __seccomp_filter() ->
+		// syscall_rollback(). On x86_64, rax held the syscall number; on arm64,
+		// x0 held the first syscall argument (while x8 holds the syscall number).
+		switch t.Arch().Arch() {
+		case arch.ARM64:
+			t.Arch().SetReturn(args[0].Value)
+		default:
+			t.Arch().SetReturn(uintptr(sysno))
+		}
 
 	case linux.SECCOMP_RET_ERRNO:
 		// "Results in the lower 16-bits of the return value being passed to
