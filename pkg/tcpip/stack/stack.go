@@ -104,6 +104,20 @@ type Stack struct {
 	// nicIDGen is used to generate NIC IDs.
 	nicIDGen atomicbitops.Int32 `state:"nosave"`
 
+	// preservedNICs, preservedRoutes, and preservedNICIDGen hold virtual NICs
+	// (such as tun/tap) and their routes across save and restore.
+	// +checklocks:mu
+	preservedNICs map[tcpip.NICID]*nic
+	// +checklocks:mu
+	preservedRoutes []tcpip.Route
+	// +checklocks:mu
+	preservedNICIDGen int32
+	// unpreservedNICs holds NICs that were not removed during beforeSave (e.g.,
+	// when removeConf is false) so their network endpoints can be cleaned up on
+	// restore.
+	// +checklocks:mu
+	unpreservedNICs []*nic `state:"wait"`
+
 	// cleanupEndpointsMu protects cleanupEndpoints.
 	cleanupEndpointsMu cleanupEndpointsMutex `state:"nosave"`
 	// +checklocks:cleanupEndpointsMu
@@ -439,6 +453,7 @@ func New(opts Options) *Stack {
 		transportProtocols:           make(map[tcpip.TransportProtocolNumber]*transportProtocolState),
 		networkProtocols:             make(map[tcpip.NetworkProtocolNumber]NetworkProtocol),
 		nics:                         make(map[tcpip.NICID]*nic),
+		preservedNICs:                make(map[tcpip.NICID]*nic),
 		packetEndpointWriteSupported: opts.AllowPacketEndpointWrite,
 		defaultForwardingEnabled:     make(map[tcpip.NetworkProtocolNumber]struct{}),
 		cleanupEndpoints:             make(map[TransportEndpoint]struct{}),
@@ -1006,6 +1021,9 @@ func (s *Stack) CreateNICWithOptions(id tcpip.NICID, ep LinkEndpoint, opts NICOp
 		}
 	}
 	s.nics[id] = n
+	if n.kind == "tun" {
+		s.preservedNICs[id] = n
+	}
 	if n.IsLoopback() {
 		s.loopbackNIC = n
 	}
@@ -1102,6 +1120,7 @@ func (s *Stack) removeNICLocked(id tcpip.NICID, closeLinkEndpoint bool) (func(),
 		return nil, &tcpip.ErrUnknownNICID{}
 	}
 	delete(s.nics, id)
+	delete(s.preservedNICs, id)
 
 	if nic.Primary != nil {
 		b := nic.Primary.NetworkLinkEndpoint.(CoordinatorNIC)
@@ -2179,9 +2198,42 @@ func (s *Stack) Restore() {
 	// RestoredEndpoint.Restore() may call other methods on s, so we can't hold
 	// s.mu while restoring the endpoints.
 	s.mu.Lock()
+	for id, nic := range s.preservedNICs {
+		nic.stack = s
+		s.nics[id] = nic
+	}
+	if s.nicIDGen.Load() < s.preservedNICIDGen {
+		s.nicIDGen.Store(s.preservedNICIDGen)
+	}
+	s.preservedNICIDGen = 0
+	preservedRoutes := s.preservedRoutes
+	s.preservedRoutes = nil
+	for _, nic := range s.nics {
+		for _, resolver := range nic.linkAddrResolvers {
+			resolver.neigh.state.clock = s.clock
+			resolver.neigh.state.rng = s.insecureRNG
+			resolver.neigh.mu.Lock()
+			for _, entry := range resolver.neigh.mu.cache {
+				entry.mu.Lock()
+				switch entry.mu.neigh.State {
+				case Reachable, Delay, Probe:
+					entry.setStateLocked(entry.mu.neigh.State)
+				case Incomplete:
+					entry.mu.done = make(chan struct{})
+					entry.mu.neigh.State = Unknown
+					entry.handlePacketQueuedLocked(tcpip.Address{})
+				}
+				entry.mu.Unlock()
+			}
+			resolver.neigh.mu.Unlock()
+		}
+	}
 	eps := s.restoredEndpoints
 	s.restoredEndpoints = nil
 	s.mu.Unlock()
+	for _, r := range preservedRoutes {
+		s.AddRoute(r)
+	}
 	for _, e := range eps {
 		e.Restore(s)
 	}
@@ -2199,6 +2251,7 @@ func (s *Stack) Restore() {
 // Resume resumes the stack after a save.
 func (s *Stack) Resume() {
 	s.mu.Lock()
+	s.unpreservedNICs = nil
 	eps := s.resumableEndpoints
 	s.resumableEndpoints = nil
 	s.mu.Unlock()
@@ -2501,12 +2554,14 @@ func (s *Stack) Seed() uint32 {
 // to generate random numbers as required. It is not cryptographically secure
 // and should not be used for security sensitive work.
 func (s *Stack) InsecureRNG() *rand.Rand {
+	s.ensureRNG()
 	return s.insecureRNG
 }
 
 // SecureRNG returns the stack's cryptographically secure random number
 // generator.
 func (s *Stack) SecureRNG() cryptorand.RNG {
+	s.ensureRNG()
 	return s.secureRNG
 }
 
