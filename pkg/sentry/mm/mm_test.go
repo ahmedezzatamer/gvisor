@@ -582,3 +582,183 @@ func TestMRemapMappableOffsetOverflow(t *testing.T) {
 		t.Errorf("MRemap grow got err %v want EINVAL", err)
 	}
 }
+
+// TestEagerForkCopy tests that Fork gives the child a copy of pages in
+// EagerForkCopy mappings immediately, so that later writes by the parent do
+// not break copy-on-write and replace the pages mapped by the parent.
+func TestEagerForkCopy(t *testing.T) {
+	ctx := contexttest.Context(t)
+	mm := testMemoryManager(ctx, t)
+	defer mm.DecUsers(ctx)
+
+	// Mirror the usertrap table: read/execute for the application, but
+	// written by the sentry with IgnorePermissions.
+	const npages = 2
+	addr, err := mm.MMap(ctx, memmap.MMapOpts{
+		Length:        npages * hostarch.PageSize,
+		Private:       true,
+		Perms:         hostarch.ReadExecute,
+		MaxPerms:      hostarch.AnyAccess,
+		EagerForkCopy: true,
+	})
+	if err != nil {
+		t.Fatalf("MMap got err %v want nil", err)
+	}
+	ignorePerms := usermem.IOOpts{IgnorePermissions: true}
+	preFork := bytes.Repeat([]byte{'A'}, npages*hostarch.PageSize)
+	if _, err := mm.CopyOut(ctx, addr, preFork, ignorePerms); err != nil {
+		t.Fatalf("CopyOut got err %v want nil", err)
+	}
+
+	pmaOff := func(mm *MemoryManager) (uint64, bool) {
+		mm.activeMu.RLock()
+		defer mm.activeMu.RUnlock()
+		pseg := mm.pmas.FindSegment(addr)
+		if !pseg.Ok() {
+			t.Fatalf("no pma for addr %#x", addr)
+		}
+		return pseg.fileRange().Start, pseg.ValuePtr().needCOW
+	}
+	offBefore, _ := pmaOff(mm)
+
+	// Fork twice to check that the parent's pma remains eligible for eager
+	// copying after the first fork.
+	for i := 0; i < 2; i++ {
+		mm2, err := mm.Fork(ctx)
+		if err != nil {
+			t.Fatalf("Fork got err %v want nil", err)
+		}
+		defer mm2.DecUsers(ctx)
+
+		if _, needCOW := pmaOff(mm); needCOW {
+			t.Errorf("parent pma is copy-on-write after fork")
+		}
+		childOff, childNeedCOW := pmaOff(mm2)
+		if childNeedCOW {
+			t.Errorf("child pma is copy-on-write after fork")
+		}
+		if childOff == offBefore {
+			t.Errorf("child pma shares memory with the parent at offset %#x", childOff)
+		}
+
+		// The parent's writes must not break copy-on-write, i.e. must not
+		// move the parent to new memory.
+		postFork := bytes.Repeat([]byte{'B' + byte(i)}, npages*hostarch.PageSize)
+		if _, err := mm.CopyOut(ctx, addr, postFork, ignorePerms); err != nil {
+			t.Fatalf("CopyOut got err %v want nil", err)
+		}
+		if off, _ := pmaOff(mm); off != offBefore {
+			t.Errorf("parent pma moved from offset %#x to %#x after write", offBefore, off)
+		}
+
+		// The child must see the pre-fork contents, and not the parent's
+		// post-fork writes.
+		childBuf := make([]byte, npages*hostarch.PageSize)
+		if _, err := mm2.CopyIn(ctx, addr, childBuf, usermem.IOOpts{}); err != nil {
+			t.Fatalf("CopyIn got err %v want nil", err)
+		}
+		if !bytes.Equal(childBuf, preFork) {
+			t.Errorf("child read %q..., want %q...", childBuf[:4], preFork[:4])
+		}
+		preFork = postFork
+	}
+}
+
+// wantEPERM reports a test error if err is not EPERM. op describes the
+// operation that returned err.
+func wantEPERM(t *testing.T, op string, err error) {
+	t.Helper()
+	if !linuxerr.Equals(linuxerr.EPERM, err) {
+		t.Errorf("%s got err %v want EPERM", op, err)
+	}
+}
+
+// TestSealedMapping tests that application operations that would
+// modify a sealed vma fail with EPERM, without modifying other vmas in the
+// same range.
+func TestSealedMapping(t *testing.T) {
+	ctx := contexttest.Context(t)
+	mm := testMemoryManager(ctx, t)
+	defer mm.DecUsers(ctx)
+
+	// Map three unsealed pages, then replace the middle page with a sealed
+	// mapping.
+	base, err := mm.MMap(ctx, memmap.MMapOpts{
+		Length:   3 * hostarch.PageSize,
+		Private:  true,
+		Perms:    hostarch.ReadWrite,
+		MaxPerms: hostarch.AnyAccess,
+	})
+	if err != nil {
+		t.Fatalf("MMap got err %v want nil", err)
+	}
+	sealedAddr := base + hostarch.PageSize
+	if _, err := mm.MMap(ctx, memmap.MMapOpts{
+		Length:   hostarch.PageSize,
+		Addr:     sealedAddr,
+		Fixed:    true,
+		Unmap:    true,
+		Private:  true,
+		Perms:    hostarch.ReadExecute,
+		MaxPerms: hostarch.AnyAccess,
+		Sealed:   true,
+	}); err != nil {
+		t.Fatalf("MMap(Sealed) got err %v want nil", err)
+	}
+	const all = 3 * hostarch.PageSize
+
+	wantEPERM(t, "MUnmap(sealed)", mm.MUnmap(ctx, sealedAddr, hostarch.PageSize))
+	wantEPERM(t, "MUnmap(all)", mm.MUnmap(ctx, base, all))
+	wantEPERM(t, "MProtect(sealed)", mm.MProtect(sealedAddr, hostarch.PageSize, hostarch.ReadWrite, false))
+	wantEPERM(t, "MProtect(all)", mm.MProtect(base, all, hostarch.Read, false))
+	wantEPERM(t, "Decommit(sealed)", mm.Decommit(sealedAddr, hostarch.PageSize))
+	wantEPERM(t, "SetDontFork(all)", mm.SetDontFork(base, all, true))
+	_, err = mm.MRemap(ctx, sealedAddr, hostarch.PageSize, 2*hostarch.PageSize, MRemapOpts{Move: MRemapMayMove})
+	wantEPERM(t, "MRemap(grow sealed)", err)
+	_, err = mm.MRemap(ctx, sealedAddr, 0, hostarch.PageSize, MRemapOpts{Move: MRemapMayMove})
+	wantEPERM(t, "MRemap(copy sealed)", err)
+	_, err = mm.MRemap(ctx, base, hostarch.PageSize, hostarch.PageSize, MRemapOpts{Move: MRemapMustMove, NewAddr: sealedAddr})
+	wantEPERM(t, "MRemap(move onto sealed)", err)
+	_, err = mm.MMap(ctx, memmap.MMapOpts{
+		Length:   hostarch.PageSize,
+		Addr:     sealedAddr,
+		Fixed:    true,
+		Unmap:    true,
+		Private:  true,
+		Perms:    hostarch.ReadWrite,
+		MaxPerms: hostarch.AnyAccess,
+	})
+	wantEPERM(t, "MMap(MAP_FIXED over sealed)", err)
+
+	// None of the above should have modified the unsealed neighbors.
+	b := []byte{'x'}
+	for _, addr := range []hostarch.Addr{base, base + 2*hostarch.PageSize} {
+		if _, err := mm.CopyOut(ctx, addr, b, usermem.IOOpts{}); err != nil {
+			t.Errorf("CopyOut(%#x) got err %v want nil", addr, err)
+		}
+	}
+	mm.mappingMu.RLock()
+	dontfork := mm.vmas.FindSegment(base).ValuePtr().dontfork
+	mm.mappingMu.RUnlock()
+	if dontfork {
+		t.Errorf("unsealed vma became MADV_DONTFORK after failed SetDontFork")
+	}
+
+	// madvise operations are refused on sealed vmas, even ones that
+	// would be no-ops.
+	wantEPERM(t, "SetDontFork(sealed, false)", mm.SetDontFork(sealedAddr, hostarch.PageSize, false))
+	wantEPERM(t, "SetVMAAnonName(sealed)", mm.SetVMAAnonName(sealedAddr, hostarch.PageSize, "x", false))
+
+	// Operations that don't touch the sealed vma still work.
+	if err := mm.MUnmap(ctx, base, hostarch.PageSize); err != nil {
+		t.Errorf("MUnmap(unsealed neighbor) got err %v want nil", err)
+	}
+
+	// Seals are inherited across fork.
+	mm2, err := mm.Fork(ctx)
+	if err != nil {
+		t.Fatalf("Fork got err %v want nil", err)
+	}
+	defer mm2.DecUsers(ctx)
+	wantEPERM(t, "child MUnmap(sealed)", mm2.MUnmap(ctx, sealedAddr, hostarch.PageSize))
+}
