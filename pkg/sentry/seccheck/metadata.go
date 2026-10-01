@@ -31,6 +31,7 @@ const (
 	PointExitNotifyParent
 	PointTaskExit
 	PointMmap
+	PointTTYOutput
 
 	// Add new Points above this line.
 	pointLengthBeforeSyscalls
@@ -336,6 +337,11 @@ func genericInit() {
 	registerPoint(PointDesc{
 		ID:            PointMmap,
 		Name:          "sentry/mmap",
+		ContextFields: defaultContextFields,
+	})
+	registerPoint(PointDesc{
+		ID:            PointTTYOutput,
+		Name:          "sentry/tty_output",
 		ContextFields: defaultContextFields,
 	})
 }

@@ -67,7 +67,7 @@ func TestEchoDeadlock(t *testing.T) {
 		// Read synchronously without notifying this waiter queue again.
 		ld.termiosMu.RLock()
 		defer ld.termiosMu.RUnlock()
-		_, _, _, _ = ld.inQueue.read(ctx, dst, ld, false /* packet */)
+		_, _, _, _ = ld.inQueue.read(ctx, dst, ld, false /* packet */, nil /* tap */)
 	})
 	ld.masterWaiter.EventRegister(&entry)
 	defer ld.masterWaiter.EventUnregister(&entry)

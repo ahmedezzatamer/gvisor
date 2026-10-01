@@ -107,6 +107,7 @@ func matchPoints(t *testing.T, msgs []test.Message) map[pb.MessageType]*checkers
 		pb.MessageType_MESSAGE_SENTRY_EXIT_NOTIFY_PARENT: {checker: checkSentryExitNotifyParent},
 		pb.MessageType_MESSAGE_SENTRY_TASK_EXIT:          {checker: checkSentryTaskExit},
 		pb.MessageType_MESSAGE_SENTRY_MMAP:               {checker: checkSentryMmap},
+		pb.MessageType_MESSAGE_SENTRY_TTY_OUTPUT:         {checker: checkSentryTTYOutput},
 		pb.MessageType_MESSAGE_SYSCALL_CLOSE:             {checker: checkSyscallClose},
 		pb.MessageType_MESSAGE_SYSCALL_CONNECT:           {checker: checkSyscallConnect},
 		pb.MessageType_MESSAGE_SYSCALL_EXECVE:            {checker: checkSyscallExecve},
@@ -277,6 +278,20 @@ func checkSentryMmap(msg test.Message) error {
 	}
 	if p.MappedPath != "" && (p.MappedCtime == nil || (p.MappedCtime.Sec == 0 && p.MappedCtime.Nsec == 0)) {
 		return fmt.Errorf("MappedCtime should not be empty for mapped file: %q", p.MappedPath)
+	}
+	if err := checkContextData(p.ContextData); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkSentryTTYOutput(msg test.Message) error {
+	p := pb.TtyOutput{}
+	if err := proto.Unmarshal(msg.Msg, &p); err != nil {
+		return err
+	}
+	if len(p.Data) == 0 {
+		return fmt.Errorf("empty terminal output")
 	}
 	if err := checkContextData(p.ContextData); err != nil {
 		return err

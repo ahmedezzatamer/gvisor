@@ -24,6 +24,7 @@ import (
 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
+	"gvisor.dev/gvisor/pkg/sentry/seccheck"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/usermem"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -321,7 +322,7 @@ func (l *lineDiscipline) inputQueueReadSize(t *kernel.Task, io usermem.IO, args 
 func (l *lineDiscipline) inputQueueRead(ctx context.Context, dst usermem.IOSequence) (int64, error) {
 	l.termiosMu.RLock()
 	// Replica never reads in packet mode.
-	n, pushed, notifyEcho, err := l.inQueue.read(ctx, dst, l, false /* packet */)
+	n, pushed, notifyEcho, err := l.inQueue.read(ctx, dst, l, false /* packet */, nil /* tap */)
 	isCanon := l.termios.LEnabled(linux.ICANON)
 	l.termiosMu.RUnlock()
 	if err != nil {
@@ -379,7 +380,9 @@ func (l *lineDiscipline) outputQueueReadSize(t *kernel.Task, io usermem.IO, args
 // +checklocksexclude:l.outQueue.mu
 // +checklocksexclude:l.masterWaiter.mu
 // +checklocksexclude:l.replicaWaiter.mu
-func (l *lineDiscipline) outputQueueRead(ctx context.Context, dst usermem.IOSequence) (int64, error) {
+//
+// tty is the terminal's index, named in the sentry/tty_output trace point.
+func (l *lineDiscipline) outputQueueRead(ctx context.Context, dst usermem.IOSequence, tty uint32) (int64, error) {
 	if dst.NumBytes() == 0 {
 		return 0, nil
 	}
@@ -387,12 +390,19 @@ func (l *lineDiscipline) outputQueueRead(ctx context.Context, dst usermem.IOSequ
 		n, err := dst.CopyOut(ctx, []byte{status})
 		return int64(n), err
 	}
+	var tap *[]byte
+	if seccheck.Global.Enabled(seccheck.PointTTYOutput) {
+		tap = new([]byte)
+	}
 	l.termiosMu.RLock()
 	// Ignore notifyEcho, as it cannot happen when reading from the output queue.
-	n, pushed, _, err := l.outQueue.read(ctx, dst, l, l.packet)
+	n, pushed, _, err := l.outQueue.read(ctx, dst, l, l.packet, tap)
 	l.termiosMu.RUnlock()
 	if err != nil {
 		return 0, err
+	}
+	if tap != nil && len(*tap) > 0 {
+		traceTTYOutput(ctx, tty, *tap)
 	}
 	if n > 0 {
 		l.replicaWaiter.Notify(waiter.WritableEvents)

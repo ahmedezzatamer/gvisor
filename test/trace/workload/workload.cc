@@ -738,6 +738,36 @@ void runInotifyRmWatch() {
 }  // namespace testing
 }  // namespace gvisor
 
+// runTTYOutput writes to a terminal's replica end and reads it back from the
+// master end, which fires sentry/tty_output.
+void runTTYOutput() {
+  int master = posix_openpt(O_RDWR | O_NOCTTY);
+  if (master < 0) {
+    err(1, "posix_openpt");
+  }
+  auto close_master = absl::MakeCleanup([master] { close(master); });
+  if (grantpt(master) < 0 || unlockpt(master) < 0) {
+    err(1, "grantpt/unlockpt");
+  }
+  const char* name = ptsname(master);
+  if (name == nullptr) {
+    err(1, "ptsname");
+  }
+  int replica = open(name, O_RDWR | O_NOCTTY);
+  if (replica < 0) {
+    err(1, "open(%s)", name);
+  }
+  auto close_replica = absl::MakeCleanup([replica] { close(replica); });
+  constexpr char kMsg[] = "txt-tty-output\n";
+  if (WriteFd(replica, kMsg, sizeof(kMsg) - 1) < 0) {
+    err(1, "write(replica)");
+  }
+  char buf[64];
+  if (ReadFd(master, buf, sizeof(buf)) <= 0) {
+    err(1, "read(master)");
+  }
+}
+
 int main(int argc, char** argv) {
   ::gvisor::testing::runForkExecve();
   ::gvisor::testing::runForkExecveat();
@@ -772,6 +802,7 @@ int main(int argc, char** argv) {
   ::gvisor::testing::runInotifyInit1();
   ::gvisor::testing::runInotifyAddWatch();
   ::gvisor::testing::runInotifyRmWatch();
+  ::gvisor::testing::runTTYOutput();
 // signalfd(2), fork(2), and vfork(2) system calls are not supported in arm
 // architecture.
 #ifdef __x86_64__
