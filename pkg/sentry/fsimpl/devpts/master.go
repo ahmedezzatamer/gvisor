@@ -135,7 +135,7 @@ func (mfd *masterFileDescription) Epollable() bool {
 
 // Read implements vfs.FileDescriptionImpl.Read.
 func (mfd *masterFileDescription) Read(ctx context.Context, dst usermem.IOSequence, _ vfs.ReadOptions) (int64, error) {
-	return mfd.t.ld.outputQueueRead(ctx, dst)
+	return mfd.t.ld.outputQueueRead(ctx, dst, mfd.t.n)
 }
 
 // Write implements vfs.FileDescriptionImpl.Write.

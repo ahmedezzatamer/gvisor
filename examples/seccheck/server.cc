@@ -175,6 +175,8 @@ const std::vector<Callback> dispatchers = [] {
       UnpackSyscall<::gvisor::syscall::Listen>;
   result[::gvisor::common::MESSAGE_SYSCALL_PTRACE] =
       UnpackSyscall<::gvisor::syscall::Ptrace>;
+  result[::gvisor::common::MESSAGE_SENTRY_TTY_OUTPUT] =
+      Unpack<::gvisor::sentry::TtyOutput>;
   return result;
 }();
 // LINT.ThenChange(../../pkg/sentry/seccheck/points/common.proto)

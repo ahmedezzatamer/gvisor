@@ -271,6 +271,12 @@ func (r *remote) Mmap(_ context.Context, _ seccheck.FieldSet, info *pb.MmapInfo)
 	return nil
 }
 
+// TTYOutput implements seccheck.Sink.
+func (r *remote) TTYOutput(_ context.Context, _ seccheck.FieldSet, info *pb.TtyOutput) error {
+	r.write(info, pb.MessageType_MESSAGE_SENTRY_TTY_OUTPUT)
+	return nil
+}
+
 // ContainerStart implements seccheck.Sink.
 func (r *remote) ContainerStart(_ context.Context, _ seccheck.FieldSet, info *pb.Start) error {
 	r.write(info, pb.MessageType_MESSAGE_CONTAINER_START)

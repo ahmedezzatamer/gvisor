@@ -119,10 +119,13 @@ func (q *queue) readableSize(t *kernel.Task, io usermem.IO, args arch.SyscallArg
 //   - Whether any bytes were processed from the wait buffer.
 //   - Whether to notify master readers of possible echo output.
 //
+// If tap is not nil, a copy of the bytes taken out of the read buffer is
+// appended to it (the packet header byte is not).
+//
 // +checklocksread:l.termiosMu
 // +checklocksexclude:q.mu
 // +checklocksexclude:l.outQueue.mu
-func (q *queue) read(ctx context.Context, dst usermem.IOSequence, l *lineDiscipline, packet bool) (int64, bool, bool, error) {
+func (q *queue) read(ctx context.Context, dst usermem.IOSequence, l *lineDiscipline, packet bool, tap *[]byte) (int64, bool, bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -156,6 +159,9 @@ func (q *queue) read(ctx context.Context, dst usermem.IOSequence, l *lineDiscipl
 		n, err := safemem.CopySeq(dst, src)
 		if err != nil {
 			return 0, err
+		}
+		if tap != nil {
+			*tap = append(*tap, q.readBuf[:n]...) // +checklocksignore
 		}
 		q.readBuf = q.readBuf[n:] // +checklocksignore
 

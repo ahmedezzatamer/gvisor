@@ -188,3 +188,16 @@ message MmapInfo {
   // copied up to the upper layer).
   bool overlayfs_lower = 10;
 }
+
+// TtyOutput is the output a terminal handed to the holder of its master end
+// (sshd, tmux, a terminal emulator), exactly as that holder read it: what the
+// person or program at the far side of the terminal was shown.
+message TtyOutput {
+  gvisor.common.ContextData context_data = 1;
+
+  // TtyIndex is the terminal's index under its devpts mount (N in /dev/pts/N).
+  uint32 tty_index = 2;
+
+  // Data is the bytes read, at most one read's worth (4096 bytes).
+  bytes data = 3;
+}
